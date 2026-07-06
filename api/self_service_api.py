@@ -54,9 +54,12 @@ SAP_S4_BASE_URL = os.getenv(
 )
 SAP_USERNAME = os.getenv("SAP_USERNAME")
 SAP_PASSWORD = os.getenv("SAP_PASSWORD")
-SAP_CLIENT = os.getenv("SAP_CLIENT", "100")  # Mandant/client number, required for SAP login
-# Set to "user@client" if SAP requires client in username for Basic auth
-SAP_USERNAME_FORMAT = os.getenv("SAP_USERNAME_FORMAT", "user")  # "user" or "user@client"
+SAP_CLIENT = os.getenv("SAP_CLIENT", "100")
+SAP_USERNAME_FORMAT = os.getenv("SAP_USERNAME_FORMAT", "user")
+# OData path prefix — change to match your SAP system:
+#   Standard SAP Gateway : /sap/opu/odata/sap
+#   SAP API Management   : /odata  (or leave empty if base URL already includes the path)
+SAP_ODATA_PREFIX = os.getenv("SAP_ODATA_PREFIX", "/sap/opu/odata/sap")
 SAP_BTP_API = os.getenv("SAP_BTP_API", "https://api.sap.com/btp")
 SAP_BATCH_API = os.getenv("SAP_BATCH_API", "https://api.sap.com/batch")
 
@@ -81,8 +84,9 @@ Sales Order entity (A_SalesOrder) — OData fields:
 
 # Log SAP config at startup (no credentials)
 logger.info(
-    "SAP config: base_url=%s client=%s username_set=%s password_set=%s",
+    "SAP config: base_url=%s odata_prefix=%s client=%s username_set=%s password_set=%s",
     SAP_S4_BASE_URL,
+    SAP_ODATA_PREFIX,
     SAP_CLIENT,
     bool(SAP_USERNAME),
     bool(SAP_PASSWORD),
@@ -246,7 +250,7 @@ def _build_odata_url(intent: Dict[str, Any]) -> str:
     if not service or not entity:
         raise ValueError("Service and Entity are required to build OData URL")
 
-    url = f"{SAP_S4_BASE_URL.rstrip('/')}/odata/{service}/{entity}"
+    url = f"{SAP_S4_BASE_URL.rstrip('/')}{SAP_ODATA_PREFIX}/{service}/{entity}"
 
     # Handle single entity by key (if value is not "0" and not None)
     if value and value != "0":
@@ -291,7 +295,7 @@ def _fetch_and_save_sales_orders() -> None:
         logger.warning("SAP credentials not set; skipping sales orders fetch")
         return
     url = (
-        f"{SAP_S4_BASE_URL.rstrip('/')}/odata/API_SALES_ORDER_SRV/A_SalesOrder"
+        f"{SAP_S4_BASE_URL.rstrip('/')}{SAP_ODATA_PREFIX}/API_SALES_ORDER_SRV/A_SalesOrder"
         "?$top=1000&$format=json"
     )
     try:
