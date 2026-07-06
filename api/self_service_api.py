@@ -471,12 +471,18 @@ Return ONLY this JSON (no markdown, no extra text):
                 raise HTTPException(status_code=500, detail="SAP credentials required for single sales order when cache missing")
             request_url = _build_odata_url(intent)
             headers = _get_sap_auth_headers()
+            logger.info("SAP GET_SINGLE request: GET %s", request_url)
             response = requests.get(request_url, headers=headers, timeout=20)
-            response.raise_for_status()
-            sap_payload = response.json()
-            sap_payload["url_used"] = request_url
-            sap_payload["intent_debug"] = intent
-            sap_payload = _normalize_sap_response(sap_payload)
+            logger.info("SAP GET_SINGLE response: status=%d", response.status_code)
+            if response.status_code == 404:
+                logger.warning("SAP 404 for single entity URL: %s", request_url)
+                sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": request_url, "intent_debug": intent}
+            else:
+                response.raise_for_status()
+                sap_payload = response.json()
+                sap_payload["url_used"] = request_url
+                sap_payload["intent_debug"] = intent
+                sap_payload = _normalize_sap_response(sap_payload)
     else:
         if not SAP_USERNAME or not SAP_PASSWORD:
             raise HTTPException(
