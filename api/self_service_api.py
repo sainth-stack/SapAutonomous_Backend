@@ -294,6 +294,9 @@ def _fetch_and_save_sales_orders() -> None:
     )
     try:
         response = requests.get(url, headers=_get_sap_auth_headers(), timeout=30)
+        if response.status_code == 404:
+            logger.warning("SAP 404 fetching sales orders from %s — cache not populated", url)
+            return
         response.raise_for_status()
         payload = response.json()
         rows = payload.get("d", {}).get("results", [])
@@ -486,14 +489,18 @@ Return ONLY this JSON (no markdown, no extra text):
             logger.info("SAP request: GET %s", request_url)
             response = requests.get(request_url, headers=headers, timeout=20)
             logger.info("SAP response: status=%d", response.status_code)
-            if response.status_code >= 400:
+            if response.status_code == 404:
+                logger.error("SAP 404 for URL: %s", request_url)
+                sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": request_url, "intent_debug": intent}
+            elif response.status_code >= 400:
                 err_body = response.text[:500] if response.text else "(empty)"
                 logger.error("SAP error: status=%d body=%s", response.status_code, err_body)
-            response.raise_for_status()
-            sap_payload = response.json()
-            sap_payload["url_used"] = request_url
-            sap_payload["intent_debug"] = intent
-            sap_payload = _normalize_sap_response(sap_payload)
+                response.raise_for_status()
+            else:
+                sap_payload = response.json()
+                sap_payload["url_used"] = request_url
+                sap_payload["intent_debug"] = intent
+                sap_payload = _normalize_sap_response(sap_payload)
         except requests.RequestException as exc:
             logger.exception("SAP request failed: %s", exc)
             detail = str(exc)
