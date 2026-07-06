@@ -48,17 +48,11 @@ def get_openai_client():
     return _openai_client
 
 # Configuration - SAP OData API
-SAP_S4_BASE_URL = os.getenv(
-    "SAP_S4_BASE_URL",
-    "https://seleccionapidev.test02.apimanagement.us10.hana.ondemand.com",
-)
-SAP_USERNAME = os.getenv("SAP_USERNAME")
-SAP_PASSWORD = os.getenv("SAP_PASSWORD")
+SAP_S4_BASE_URL = os.getenv("SAP_S4_BASE_URL", "https://seleccionapidev.test02.apimanagement.us10.hana.ondemand.com")
+SAP_USERNAME = os.getenv("SAP_USERNAME", "abaphana82")
+SAP_PASSWORD = os.getenv("SAP_PASSWORD", "welcome@82")
 SAP_CLIENT = os.getenv("SAP_CLIENT", "100")
 SAP_USERNAME_FORMAT = os.getenv("SAP_USERNAME_FORMAT", "user")
-# OData path prefix — change to match your SAP system:
-#   Standard SAP Gateway : /sap/opu/odata/sap
-#   SAP API Management   : /odata  (or leave empty if base URL already includes the path)
 SAP_ODATA_PREFIX = os.getenv("SAP_ODATA_PREFIX", "/sap/opu/odata/sap")
 SAP_BTP_API = os.getenv("SAP_BTP_API", "https://api.sap.com/btp")
 SAP_BATCH_API = os.getenv("SAP_BATCH_API", "https://api.sap.com/batch")
