@@ -22,7 +22,10 @@ sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 )
 from db import get_db_connection
-from pgvector.psycopg2 import register_vector
+try:
+    from pgvector.psycopg2 import register_vector
+except ImportError:
+    def register_vector(conn): pass
 from sqlalchemy.orm import Session
 from bainocular_configuration import ConfigParams
 								  

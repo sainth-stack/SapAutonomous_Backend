@@ -13,35 +13,23 @@ import sys
 sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 )
-from api.database_config import close_pool, get_connection, init_pool
 from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if os.getenv("DB_HOST"):
-        await init_pool()
-        try:
-            async with get_connection() as conn:
-                await conn.fetchval("SELECT 1")
-        except Exception as exc:
-            raise
+    # Create all SQLite tables on startup (no-op if they already exist)
+    from database_gcp import Base, engine
+    Base.metadata.create_all(bind=engine)
     yield
-    if os.getenv("DB_HOST"):
-        await close_pool()
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Vijay AMS APIs", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="SapAutonomous Backend", version="1.0.0", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://bainocular.ai.s3-website-ap-southeast-1.amazonaws.com",
-            "http://localhost",
-            "http://localhost:3000",
-            "*",
-        ],
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

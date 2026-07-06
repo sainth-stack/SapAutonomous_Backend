@@ -14,7 +14,10 @@ from sqlalchemy.orm import Session
 from database_gcp import Base, engine, get_db
 from models import SlaTicketData
 from typing import Annotated
-from hdbcli import dbapi
+try:
+    from hdbcli import dbapi
+except ImportError:
+    dbapi = None
 from ticket_src.hana_creds import HanaCreds
 from ticket_src.ams_kedb import add_log
 import psycopg2

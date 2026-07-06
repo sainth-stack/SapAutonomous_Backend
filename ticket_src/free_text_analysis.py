@@ -1,4 +1,7 @@
-from hdbcli import dbapi
+try:
+    from hdbcli import dbapi
+except ImportError:
+    dbapi = None
 from sqlalchemy.engine import cursor
 from ticket_src.hana_creds import HanaCreds
 from dotenv import load_dotenv
