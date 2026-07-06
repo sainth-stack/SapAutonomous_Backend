@@ -37,23 +37,12 @@ sys.path.append(
 )
 
 
-#from bainocular_configuration import ConfigParams
-from get_key import get_api_key
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level pool singleton – initialised once at application startup
 # ---------------------------------------------------------------------------
 _pool: Pool | None = None
-
-db_user_key=os.environ.get("DBUSER_KEY")
-db_pwd_key=os.environ.get("DBPWD_KEY")
-db_host_key=os.environ.get("DBHOST_KEY")
-db_port_key=os.environ.get("DBPORT_KEY")
-db_name_key=os.environ.get("DBNAME_KEY")
-db_vector_name_key=os.environ.get("DBVECTORNAME_KEY")
-my_project = os.environ.get("PROJECT")
-ai_prod_key = os.environ.get("AI_PROD_KEY")
 
 def _build_ssl_context() -> ssl.SSLContext | None:
     """
@@ -106,12 +95,11 @@ async def init_pool() -> None:
     # }
 
     dsn_params: dict = {
-       # "host":     ConfigParams.db_host,
-        "host":     '10.10.2.2',
-        "port":     get_api_key(my_project, db_port_key),
-        "database": get_api_key(my_project, db_name_key),      # Required – fail fast if absent
-        "user":     get_api_key(my_project, db_user_key),
-        "password": get_api_key(my_project, db_pwd_key),
+        "host":     os.getenv("DB_HOST", ""),
+        "port":     os.getenv("DB_PORT", "5432"),
+        "database": os.getenv("DB_NAME", ""),
+        "user":     os.getenv("DB_USER", ""),
+        "password": os.getenv("DB_PASSWORD", ""),
         "min_size": int(os.getenv("DB_POOL_MIN", "2")),
         "max_size": int(os.getenv("DB_POOL_MAX", "10")),
         "command_timeout": 30,

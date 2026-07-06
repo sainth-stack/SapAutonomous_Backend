@@ -19,18 +19,16 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_pool()
-
-    try:
-        async with get_connection() as conn:
-            await conn.fetchval("SELECT 1")
-
-    except Exception as exc:
-        raise
-
+    if os.getenv("DB_HOST"):
+        await init_pool()
+        try:
+            async with get_connection() as conn:
+                await conn.fetchval("SELECT 1")
+        except Exception as exc:
+            raise
     yield
-
-    await close_pool()
+    if os.getenv("DB_HOST"):
+        await close_pool()
 
 
 def create_app() -> FastAPI:
