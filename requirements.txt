@@ -11,13 +11,10 @@ openai
 python-dotenv
 sqlalchemy
 bcrypt>=4.0
-pinecone
-google-api-core
-grpcio
+chromadb
 httpx
 nltk
 langchain-openai
-google-cloud-secret-manager
 xmltodict
 pydantic
 gunicorn

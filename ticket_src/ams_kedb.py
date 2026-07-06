@@ -1,17 +1,14 @@
-from get_key import get_api_key
-
 from fastapi import Body, FastAPI, Query, Request, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, cast, Annotated
 import os
 import json
-from psycopg2.extras import execute_values
 import uvicorn
 from langchain_openai import OpenAIEmbeddings
 from dotenv import load_dotenv
 from pydantic import SecretStr
 import uuid
-from pinecone import Pinecone, ServerlessSpec, QueryResponse
+import chromadb
 import pandas as pd
 from openai import OpenAI, RateLimitError
 import zlib
@@ -22,26 +19,23 @@ sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 )
 from db import get_db_connection
-try:
-    from pgvector.psycopg2 import register_vector
-except ImportError:
-    def register_vector(conn): pass
 from sqlalchemy.orm import Session
 from bainocular_configuration import ConfigParams
-								  
-
-
 
 DbSession = Annotated[Session, Depends(get_db_connection)]
 
 load_dotenv()
 app = FastAPI()
 
-pc = Pinecone(api_key=os.environ.get("PINECONE_KEY"))
+# ChromaDB — local persistent vector store, no API key needed
+_chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 
-my_project = os.environ.get("PROJECT")
-ai_prod_key = os.environ.get("AI_PROD_KEY")
+def _get_collection(name: str = "ams_tickets"):
+    return _chroma_client.get_or_create_collection(
+        name=name,
+        metadata={"hnsw:space": "cosine"},
+    )
 
 #client = OpenAI(api_key=get_api_key(my_project, ai_prod_key))
 client = OpenAI(api_key=ConfigParams.openai_api_key)
@@ -186,206 +180,65 @@ def process_file(df):
     return ticket_records
 
 def save_embeddings_to_gcp_db(conn, ticket_records, table_name):
-    register_vector(conn)
-
-    if conn is not None and ticket_records is not None:
-        cursor = conn.cursor()
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.commit()
-
-        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {table_name}(
-                       id UUID PRIMARY KEY,
-                       embedding VECTOR(1536),
-                       metadata JSONB,
-                       request TEXT,
-                       answer TEXT
-                       )""")
-        
-        conn.commit()
-
-
-        cursor.execute(f"TRUNCATE TABLE {table_name}")
-        conn.commit()
-
-        insert_query = f"""INSERT INTO {table_name} (id, embedding, metadata)
-                        VALUES %s
-                        ON CONFLICT(id) DO NOTHING"""
-
-        values = [(
-            t["id"],
-          
-            t["vector"],
-            json.dumps(clean_metadata(t["metadata"]))
-           
-        ) for t in ticket_records]
-
-        execute_values(cursor, insert_query, values)
-        conn.commit()
-
-        print(f"{len(ticket_records)}Embeddings saved to rag_db {table_name}")
+    """Save embeddings to ChromaDB (local, no credentials needed)."""
+    if not ticket_records:
+        return
+    collection = _get_collection(table_name)
+    collection.upsert(
+        ids=[t["id"] for t in ticket_records],
+        embeddings=[t["vector"] for t in ticket_records],
+        metadatas=[clean_metadata(t["metadata"]) for t in ticket_records],
+    )
+    print(f"{len(ticket_records)} embeddings saved to ChromaDB collection '{table_name}'")
 
 def save_embeddings_to_db(ticket_records):
-
-    if "ams-tickets" not in [i.name for i in pc.list_indexes()]:
-        pc.create_index(
-            name="ams-tickets",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            ),
-            dimension=1536,  # depends on your embedding model
-            metric="cosine"
-        )
-    
-    index = pc.Index("ams-tickets")
-
-    index.delete(delete_all=True)
-
-    values = [(
-            t["id"],
-          
-            t["vector"],
-            t["metadata"]
-           
-        ) for t in ticket_records]
-
-    # index.upsert(values)
-
-    i = 0
-    batch_size = 100
-    while i < len(values):
-        batch = values[i:i+batch_size]
-
-        try:
-            index.upsert(vectors=batch)
-            i += batch_size
-
-        except Exception as e:
-            print("Failed batch, reducing size...", e)
-
-            if batch_size == 1:
-                raise e
-
-            #batch_size = max(1, batch_size // 2)
-    print("Saved to DB")
+    """Save embeddings to ChromaDB local collection."""
+    if not ticket_records:
+        return
+    collection = _get_collection("ams_tickets")
+    collection.upsert(
+        ids=[t["id"] for t in ticket_records],
+        embeddings=[t["vector"] for t in ticket_records],
+        metadatas=[clean_metadata(t["metadata"]) for t in ticket_records],
+    )
+    print(f"Saved {len(ticket_records)} records to ChromaDB")
 
 
 async def get_context_tickets(query_vector: list[float]):
     try:
-
-        index = pc.Index("ams-tickets")
-        #index = pc.Index("lux-ams-tickets-dense")
-
-        results = index.query(
-            vector = query_vector,
-            top_k=3,
-            include_metadata=True
-        )
-
-        fetch_op_log = {
-            "module_name": "Bainocular",
-            "program_name": "ams_kedb.py",
-            "user": "",
-            "log_type": "S",
-            "content": f"Database fetch operation successful"
-        }
-
-        resp = await add_log(fetch_op_log)
-        print(f"Logging Status: {resp}")
-
-        print(results)
-        return results
-
+        collection = _get_collection("ams_tickets")
+        results = collection.query(query_embeddings=[query_vector], n_results=3)
+        # Return as list of (metadata, answer, similarity) tuples matching summarize_result expectations
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        formatted = [(m, None, 1 - d) for m, d in zip(metadatas, distances)]
+        return formatted
     except Exception as e:
-        fetch_db_log = {
-            "module_name": "Bainocular",
-            "program_name": "ams_kedb.py",
-            "user": "",
-            "log_type": "E",
-            "content": f"Failed to fetch data from database: {e}"
-        }
-
-        resp = await add_log(fetch_db_log)
-        print(f"Logging Status: {resp}")
+        print(f"ChromaDB fetch error: {e}")
         return []
 
 async def process_user_query(conn, user_input, table_name, email: Optional[str] = None):
     try:
-
-       
-       
-        #key = get_api_key(my_project, ai_prod_key)
-       
         key = ConfigParams.openai_api_key
-							   
-			  
-						   
-									
-						 
-		 
         embedding_model = OpenAIEmbeddings(
             model="text-embedding-3-small",
-            api_key=SecretStr(key) if key is not None else None
+            api_key=SecretStr(key) if key else None,
         )
-
-    
-
-        register_vector(conn)
-
-        cursor = conn.cursor()
-
         user_query_embedding = await embedding_model.aembed_query(user_input)
-	#print(f"user query:{user_query_embedding}")
-        sql = f"""
-        SELECT metadata, answer, 1 - (embedding <-> %s::vector) AS similarity
-        FROM {table_name}
-        ORDER BY embedding <-> %s::vector
-        LIMIT 3;
-        """
 
-        cursor.execute(sql, (user_query_embedding, user_query_embedding))
-        results = cursor.fetchall()
+        collection = _get_collection(table_name)
+        results = collection.query(query_embeddings=[user_query_embedding], n_results=3)
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        # Return as (metadata, answer, similarity) tuples — same shape as the old PostgreSQL rows
+        return [(m, None, 1 - d) for m, d in zip(metadatas, distances)]
 
-        fetch_op_log = {
-            "module_name": "Bainocular",
-            "program_name": "ams_kedb.py",
-            "user": email if email else "",
-            "log_type": "S",
-            "content": f"Database fetch operation successful - process_user_query"
-        }
-
-        resp = await add_log(fetch_op_log)
-        print(f"Logging Status: {resp}")
-
-        return results
-    
-    except Exception as e:
-
-        fetch_db_log = {
-            "module_name": "Bainocular",
-            "program_name": "ams_kedb.py",
-            "user": email if email else "",
-            "log_type": "E",
-            "content": f"Failed to fetch data from database - process_user_query: {e}"
-        }
-
-        resp = await add_log(fetch_db_log)
-        print(f"Logging Status: {resp}")
-        return []
-    
     except RateLimitError as e:
-        print(f"OpenAI RATELIMIT ERROR: {e}")
-        fetch_db_log = {
-            "module_name": "Bainocular",
-            "program_name": "ams_kedb.py",
-            "user": "",
-            "log_type": "E",
-            "content": f"open ai limit exceeded or expired - process_user_query: {e}"
-        }
-
-        resp = await add_log(fetch_db_log)
-        print(f"Logging Status: {resp}")
-        return []				   
+        print(f"OpenAI rate limit: {e}")
+        return []
+    except Exception as e:
+        print(f"process_user_query error: {e}")
+        return []
 
 async def summarize_result(result, query, email: Optional[str] = None):
     result_list = []

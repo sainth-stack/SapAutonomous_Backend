@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 from ticket_src.ams_kedb import extract_text_from_image, get_context_tickets, get_embedding, add_log, process_user_query, save_embeddings_to_gcp_db, summarize_result, process_file
 from openai import OpenAI
 from fastapi import Body, FastAPI, Query, Request, UploadFile, File, APIRouter, HTTPException
-from pinecone import Pinecone, ServerlessSpec, QueryResponse
 from typing import List, Optional, cast, Annotated
 from ticket_src.free_text_analysis import generate_sql, get_classified_ticket_database, insert_table_replica_values, run_sql_query, replica_chatbot, get_database_to_file, process_llm_with_file
 import httpx as hp
@@ -44,7 +43,7 @@ DbSessionVector = Annotated[Session, Depends(get_db_connection)]
 					 
 
 FERNET_KEY = os.environ.get("FERNET_KEY")
-cipher = Fernet(FERNET_KEY.encode())
+cipher = Fernet(FERNET_KEY.encode()) if FERNET_KEY else None
 
 client = OpenAI(api_key=ConfigParams.openai_api_key)
 
@@ -56,6 +55,8 @@ if not os.path.exists(EXCEL_FILE_DIR):
 
 
 def decrypt_password(encrypted_password: str) -> str:
+    if cipher is None:
+        return encrypted_password
     return cipher.decrypt(encrypted_password.encode()).decode()
 
 @app.post("/maintain_tickets")

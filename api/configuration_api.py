@@ -19,7 +19,7 @@ from models import (
 config_router = APIRouter(prefix="/api/configuration", tags=["configuration"])
 
 FERNET_KEY = os.environ.get("FERNET_KEY")
-cipher = Fernet(FERNET_KEY.encode())
+cipher = Fernet(FERNET_KEY.encode()) if FERNET_KEY else None
 _GLOBAL_ID = 1
 
 
@@ -57,6 +57,8 @@ class GlobalIntervalsUpdate(BaseModel):
     failed_idoc_interval_time: Optional[str] = Field(None, max_length=256)
 
 def encrypt_password(password: str) -> str:
+    if cipher is None:
+        return password
     return cipher.encrypt(password.encode()).decode()
 
 BCRYPT_MAX_BYTES = 72
