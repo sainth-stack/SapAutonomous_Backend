@@ -53,37 +53,38 @@ def get_connection():
 
 # model_json = XGBClassifier()
 # model_json.load_model('xgboost_cf_json.json')
-logreg_model = joblib.load('models/logreg_cf_model.pkl')
-label_encoder_model = joblib.load('models/logreg_cf_labelencoder.pkl')
-tfidf_model = joblib.load('models/logreg_cf_tfidfvect.pkl')
-
-depart_logreg_model = joblib.load('models/depart_logreg_cf_model.pkl')
-depart_label_encoder_model = joblib.load('models/depart_logreg_cf_labelencoder.pkl')
-depart_tfidf_model = joblib.load('models/depart_logreg_cf_tfidfvect.pkl')
+try:
+    logreg_model = joblib.load('models/logreg_cf_model.pkl')
+    label_encoder_model = joblib.load('models/logreg_cf_labelencoder.pkl')
+    tfidf_model = joblib.load('models/logreg_cf_tfidfvect.pkl')
+    depart_logreg_model = joblib.load('models/depart_logreg_cf_model.pkl')
+    depart_label_encoder_model = joblib.load('models/depart_logreg_cf_labelencoder.pkl')
+    depart_tfidf_model = joblib.load('models/depart_logreg_cf_tfidfvect.pkl')
+except FileNotFoundError:
+    logreg_model = label_encoder_model = tfidf_model = None
+    depart_logreg_model = depart_label_encoder_model = depart_tfidf_model = None
+    print("Warning: ML model files not found — classification endpoints will be unavailable.")
 
 def classify_area(sentence: str):
-    
+    if tfidf_model is None or logreg_model is None:
+        return "XXX"
     if type(sentence) is str:
         raw_description = [sentence]
         description = tfidf_model.transform(raw_description)
-        
         predicted_value = logreg_model.predict(description)
-        #print(predicted_value)
         predicted_label = label_encoder_model.inverse_transform(predicted_value)
-        #print("class:", predicted_label, type(predicted_label))
         return predicted_label[0]
     else:
         return "XXX"
 
 def classify_department(sentence: str):
+    if depart_tfidf_model is None or depart_logreg_model is None:
+        return "XXX"
     if type(sentence) is str:
         raw_description = [sentence]
         description = depart_tfidf_model.transform(raw_description)
-       
         predicted_value = depart_logreg_model.predict(description)
-        #print(predicted_value)
         predicted_label = depart_label_encoder_model.inverse_transform(predicted_value)
-        #print("class:", predicted_label, type(predicted_label))
         return predicted_label[0]
     else:
         return "XXX"
