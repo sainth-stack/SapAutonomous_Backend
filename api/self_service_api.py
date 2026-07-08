@@ -232,7 +232,8 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
 def _build_odata_url(intent: Dict[str, Any]) -> str:
     """
     Constructs the SAP OData URL based on the intent.
-    Format: {base}/odata/{service}/{entity} or {base}/odata/{service}/{entity}('{value}')
+    Always uses the collection endpoint (no key predicate) so the SAP API Management
+    proxy does not return 404. Single-entity lookups use $filter instead.
     """
     service = intent.get("service")
     entity = intent.get("entity")
@@ -240,26 +241,41 @@ def _build_odata_url(intent: Dict[str, Any]) -> str:
     input_filter = intent.get("$filter")
     top = intent.get("$top")
     orderby = intent.get("$orderby")
+    operation = intent.get("operation", "GET_LIST")
 
     if not service or not entity:
         raise ValueError("Service and Entity are required to build OData URL")
 
+    # Key field per entity — used for GET_SINGLE $filter
+    ENTITY_KEY_FIELD = {
+        "A_SalesOrder": "SalesOrder",
+        "A_SalesOrderItem": "SalesOrder",
+        "A_PurchaseOrder": "PurchaseOrder",
+    }
+
     url = f"{SAP_S4_BASE_URL.rstrip('/')}{SAP_ODATA_PREFIX}/{service}/{entity}"
 
-    # Handle single entity by key (if value is not "0" and not None)
-    if value and value != "0":
-        url = f"{url}('{value}')"
-
     params = []
-    if input_filter:
-        params.append(f"$filter={input_filter}")
+
+    # For single entity: use $filter=KeyField eq 'value' instead of key predicate
+    # Key predicate syntax (A_SalesOrder('4')) returns 404 on SAP API Management proxy
+    if operation == "GET_SINGLE" and value and value != "0":
+        key_field = ENTITY_KEY_FIELD.get(entity, entity.replace("A_", ""))
+        filter_expr = f"{key_field} eq '{value}'"
+        if input_filter:
+            filter_expr = f"({filter_expr}) and ({input_filter})"
+        params.append(f"$filter={filter_expr}")
+        params.append("$top=1")
+    else:
+        if input_filter:
+            params.append(f"$filter={input_filter}")
+        if top:
+            params.append(f"$top={top}")
+        else:
+            params.append("$top=1000")
+
     if orderby:
         params.append(f"$orderby={orderby}")
-    # Default $top for GET_LIST when not set (e.g. "all" list) so we get more than SAP's default page
-    if top:
-        params.append(f"$top={top}")
-    elif intent.get("operation") == "GET_LIST":
-        params.append("$top=1000")
     params.append("$format=json")
     url += "?" + "&".join(params)
     return url
@@ -370,10 +386,7 @@ async def query_sap(request: SapQueryRequest):
     if not user_input:
         raise HTTPException(status_code=400, detail="query is required")
 
-    # 1) Ensure we have all sales orders in a JSON file (fetch from SAP if missing)
-    _ensure_sales_orders_cached()
-
-    # 2) Send sample schema + user query to LLM to generate the query (intent)
+    # 1) LLM: parse natural language → SAP OData intent
     parser_prompt = """
 You are an enterprise integration assistant. You will receive a SAMPLE SCHEMA of available SAP entities and a USER QUERY.
 Your job is to output a single JSON object that describes how to execute the query (service, entity, filters, order, limit).
@@ -422,81 +435,51 @@ Return ONLY this JSON (no markdown, no extra text):
         llm_text = llm_resp.choices[0].message.content if llm_resp and llm_resp.choices else ""
         parsed = _extract_json_object(llm_text)
         if not parsed:
-            raise HTTPException(
-                status_code=502,
-                detail="LLM did not return valid JSON for SAP intent parsing.",
-            )
+            raise HTTPException(status_code=502, detail="LLM did not return valid JSON for SAP intent parsing.")
         intent = parsed
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"SAP intent generation failed: {str(exc)}")
 
-    # 3) Execute: use cached sales orders JSON when possible (A_SalesOrder GET_LIST), else call SAP
+    # 2) Execute query
+    #    A_SalesOrder: served from local sales_orders.json (SAP API Management proxy
+    #    only allows collection fetches from the production server IP, not locally).
+    #    Other entities: call SAP live directly.
     sap_payload: Dict[str, Any]
-    if (
-        intent.get("entity") == "A_SalesOrder"
-        and intent.get("operation") == "GET_LIST"
-    ):
+    entity = intent.get("entity", "")
+    operation = intent.get("operation", "GET_LIST")
+
+    if entity == "A_SalesOrder":
         rows = _load_sales_orders_from_json()
-        if rows is not None:
-            result_rows = _apply_intent_to_sales_orders(rows, intent)
-            sap_payload = {
-                "d": {"results": result_rows, "totalCount": len(result_rows)},
-                "url_used": f"local:{SALES_ORDERS_JSON}",
-                "intent_debug": intent,
-            }
+        if rows is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Sales orders data not available. Run POST /api/sap/sales-orders/refresh on the production server to populate the cache.",
+            )
+        if operation == "GET_SINGLE":
+            single_id = intent.get("value")
+            matched = next((r for r in rows if str(r.get("SalesOrder", "")) == str(single_id)), None)
+            result_rows = _apply_intent_to_sales_orders([matched] if matched else [], intent)
         else:
-            sap_payload = {
-                "d": {"results": [], "totalCount": 0},
-                "url_used": f"local:{SALES_ORDERS_JSON}",
-                "intent_debug": intent,
-            }
-    elif intent.get("entity") == "A_SalesOrder" and intent.get("operation") == "GET_SINGLE":
-        single_id = intent.get("value")
-        rows = _load_sales_orders_from_json()
-        sap_payload = None
-        if rows is not None:
-            if single_id:
-                single_row = next((r for r in rows if str(r.get("SalesOrder")) == str(single_id)), None)
-                if single_row is not None:
-                    cleaned = {k: _format_sap_date(v) if isinstance(v, str) and "/Date(" in str(v) else v for k, v in single_row.items() if k != "__metadata"}
-                    sap_payload = {"d": {"results": [cleaned], "totalCount": 1}, "url_used": f"local:{SALES_ORDERS_JSON}", "intent_debug": intent}
-                else:
-                    sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": f"local:{SALES_ORDERS_JSON}", "intent_debug": intent}
-            else:
-                sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": f"local:{SALES_ORDERS_JSON}", "intent_debug": intent}
-        if sap_payload is None:
-            if not SAP_USERNAME or not SAP_PASSWORD:
-                raise HTTPException(status_code=500, detail="SAP credentials required for single sales order when cache missing")
-            request_url = _build_odata_url(intent)
-            headers = _get_sap_auth_headers()
-            logger.info("SAP GET_SINGLE request: GET %s", request_url)
-            response = requests.get(request_url, headers=headers, timeout=20)
-            logger.info("SAP GET_SINGLE response: status=%d", response.status_code)
-            if response.status_code == 404:
-                logger.warning("SAP 404 for single entity URL: %s", request_url)
-                sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": request_url, "intent_debug": intent}
-            else:
-                response.raise_for_status()
-                sap_payload = response.json()
-                sap_payload["url_used"] = request_url
-                sap_payload["intent_debug"] = intent
-                sap_payload = _normalize_sap_response(sap_payload)
+            result_rows = _apply_intent_to_sales_orders(rows, intent)
+
+        sap_payload = {
+            "d": {"results": result_rows, "totalCount": len(result_rows)},
+            "url_used": f"sap-cache:{SALES_ORDERS_JSON}",
+            "intent_debug": intent,
+        }
     else:
         if not SAP_USERNAME or not SAP_PASSWORD:
-            raise HTTPException(
-                status_code=500,
-                detail="SAP_USERNAME and SAP_PASSWORD must be set for SAP API authentication",
-            )
+            raise HTTPException(status_code=500, detail="SAP_USERNAME and SAP_PASSWORD must be configured")
         try:
             request_url = _build_odata_url(intent)
             headers = _get_sap_auth_headers()
             logger.info("SAP request: GET %s", request_url)
-            response = requests.get(request_url, headers=headers, timeout=20)
+            response = requests.get(request_url, headers=headers, timeout=30)
             logger.info("SAP response: status=%d", response.status_code)
             if response.status_code == 404:
-                logger.error("SAP 404 for URL: %s", request_url)
+                logger.warning("SAP 404 for URL: %s", request_url)
                 sap_payload = {"d": {"results": [], "totalCount": 0}, "url_used": request_url, "intent_debug": intent}
             elif response.status_code >= 400:
                 err_body = response.text[:500] if response.text else "(empty)"
@@ -521,7 +504,7 @@ Return ONLY this JSON (no markdown, no extra text):
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Error building URL or processing: {str(exc)}")
 
-    # 4) Send answer + user query to LLM to get a friendly answer
+    # 3) LLM: generate friendly HTML answer
     friendly_answer = ""
     try:
         friendly_answer = _generate_friendly_answer(user_input, sap_payload, email=request.email)

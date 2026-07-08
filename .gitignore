@@ -1,0 +1,28 @@
+# Virtual environment
+/venv
+venv/
+
+# Environment secrets
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Local data cache (fetched from SAP at runtime)
+data/sales_orders.json
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
