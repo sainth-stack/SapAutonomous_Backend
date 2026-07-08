@@ -12,9 +12,6 @@ __pycache__/
 *.pyd
 .Python
 
-# Local data cache (fetched from SAP at runtime)
-data/sales_orders.json
-
 # Distribution / build
 dist/
 build/
