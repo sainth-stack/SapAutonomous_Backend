@@ -451,12 +451,12 @@ Return ONLY this JSON (no markdown, no extra text):
     operation = intent.get("operation", "GET_LIST")
 
     if entity == "A_SalesOrder":
+        # Auto-fetch from SAP and populate cache if missing
+        if not SALES_ORDERS_JSON.exists():
+            _fetch_and_save_sales_orders()
         rows = _load_sales_orders_from_json()
         if rows is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Sales orders data not available. Run POST /api/sap/sales-orders/refresh on the production server to populate the cache.",
-            )
+            raise HTTPException(status_code=503, detail="Sales orders data not available and could not be fetched from SAP.")
         if operation == "GET_SINGLE":
             single_id = intent.get("value")
             matched = next((r for r in rows if str(r.get("SalesOrder", "")) == str(single_id)), None)
