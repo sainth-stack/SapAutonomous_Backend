@@ -53,7 +53,7 @@ SAP_USERNAME = "abaphana82"
 SAP_PASSWORD = "welcome@82"
 SAP_CLIENT = "100"
 SAP_USERNAME_FORMAT = "user"
-SAP_ODATA_PREFIX = "/sap/opu/odata/sap"
+SAP_ODATA_PREFIX = "/odata"
 SAP_BTP_API = os.getenv("SAP_BTP_API", "https://api.sap.com/btp")
 SAP_BATCH_API = os.getenv("SAP_BATCH_API", "https://api.sap.com/batch")
 
