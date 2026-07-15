@@ -1,7 +1,9 @@
-from google.cloud import secretmanager
+from dotenv import load_dotenv
+import os
 
-def get_api_key(project_id, secret_id, version_id="latest"):
-    client = secretmanager.SecretManagerServiceClient()
-    name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
-    response = client.access_secret_version(request={"name": name})
-    return response.payload.data.decode("UTF-8")
+load_dotenv()
+
+
+def get_api_key(env_var_name, default=""):
+    """Read a secret/API key from an environment variable (.env)."""
+    return os.environ.get(env_var_name, default)

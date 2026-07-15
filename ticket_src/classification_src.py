@@ -19,7 +19,10 @@ except ImportError:
     dbapi = None
 from ticket_src.hana_creds import HanaCreds
 from ticket_src.ams_kedb import add_log
-import psycopg2
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 import os
 from dotenv import load_dotenv
 from fastapi.params import Depends

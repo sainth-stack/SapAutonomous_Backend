@@ -437,7 +437,7 @@ def _is_prompt_injection_image(image_b64: str, media_type: str) -> bool:
 # This function provides a reusable check and a consistent error message.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _check_input_length(text: str) -> str | None:
+def _check_input_length(text: str) -> Optional[str]:
     """
     Returns an error message string if the input exceeds MAX_MESSAGE_CHARS.
     Returns None if the input length is acceptable.
@@ -609,7 +609,7 @@ NOT_SAP_REPLY = (
 )
 
 
-def _is_sap_relevant(text: str, history: list[dict] | None = None) -> bool:
+def _is_sap_relevant(text: str, history: Optional[list] = None) -> bool:
     """
     Classifies whether the user's text message is SAP-related.
     Returns True if SAP-relevant, False otherwise.
@@ -650,7 +650,7 @@ def _is_sap_relevant(text: str, history: list[dict] | None = None) -> bool:
 
 
 async def chat(session_id: str, user_message: str,
-         image_b64: str | None = None, media_type: str | None = None, email: Optional[str] = None) -> dict:
+         image_b64: Optional[str] = None, media_type: Optional[str] = None, email: Optional[str] = None) -> dict:
     """
     Main multi-turn chat function. Supports both text-only and image+text turns.
 
@@ -975,7 +975,7 @@ async def chat_image_endpoint(
     session_id: Optional[str] = Form(None),
     message:    str           = Form(""),
     image:      UploadFile    = File(...),
-	email: str | None = Form(None)							  
+	email: Optional[str] = Form(None)							  
 ):
     """
     Multimodal chat endpoint — accepts an image file + optional text message.

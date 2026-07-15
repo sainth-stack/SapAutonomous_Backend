@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from cryptography.fernet import Fernet
 import os 
-from database_gcp import get_db
+from database_gcp import get_db, Base, engine
 from models import (
     ApplicationConfiguration,
     ConfigurationGlobalSettings,
@@ -15,6 +15,9 @@ from models import (
     User,
     SAPUser
 )
+
+# Ensure tables exist before any module-load-time seeding runs below.
+Base.metadata.create_all(bind=engine)
 
 config_router = APIRouter(prefix="/api/configuration", tags=["configuration"])
 
@@ -78,6 +81,56 @@ def hash_password(password: str) -> str:
         secret = _password_bytes(password)
         return _bcrypt.hashpw(secret, _bcrypt.gensalt()).decode("utf-8")
     return password  # fallback if bcrypt not installed (dev only)
+
+
+def _seed_default_admin():
+    """If the default admin doesn't exist yet, create it (and attach working SAP creds)."""
+    from database_gcp import SessionLocal
+
+    default_email = "admin@seleccionconsulting.com"
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.email == default_email).first()
+        if u is None:
+            u = User(
+                username="Admin",
+                email=default_email,
+                password_hash=hash_password("Admin@123"),
+                role_id=None,
+                is_super_admin=True,
+            )
+            db.add(u)
+            db.commit()
+            db.refresh(u)
+
+        sap_user = db.query(SAPUser).filter(SAPUser.userid == u.id).first()
+        if sap_user is None:
+            # Reuse the known-working SAP demo credential; sapuserid must stay unique,
+            # so free it from any other user before attaching it here.
+            existing = db.query(SAPUser).filter(SAPUser.sapuserid == "abaphana82").first()
+            if existing is not None:
+                db.delete(existing)
+                db.commit()
+            sap_user = SAPUser(
+                sapuserid="abaphana82",
+                password_hash=encrypt_password("welcome@82"),
+                userid=u.id,
+                email=u.email,
+            )
+            db.add(sap_user)
+            db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+# Seed default admin when module loads (after hash_password/encrypt_password are defined)
+try:
+    _seed_default_admin()
+except Exception:
+    pass
+
 
 @config_router.get("/global-intervals", response_model=GlobalIntervalsResponse)
 def get_global_intervals(db: Session = Depends(get_db)):

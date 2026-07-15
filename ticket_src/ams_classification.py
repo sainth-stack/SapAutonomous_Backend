@@ -19,7 +19,10 @@ from typing import List, Optional, cast, Annotated
 from ticket_src.free_text_analysis import generate_sql, get_classified_ticket_database, insert_table_replica_values, run_sql_query, replica_chatbot, get_database_to_file, process_llm_with_file
 import httpx as hp
 import io
-import psycopg2
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker, declarative_base
 from database_gcp import Base, engine, get_db, get_postgres_db_conn
@@ -60,7 +63,7 @@ def decrypt_password(encrypted_password: str) -> str:
     return cipher.decrypt(encrypted_password.encode()).decode()
 
 @app.post("/maintain_tickets")
-async def handle_ticket_data(conn: DbSessionPostgres, db: DbSession, file:UploadFile = File(...), email: str | None = Form(None)):
+async def handle_ticket_data(conn: DbSessionPostgres, db: DbSession, file:UploadFile = File(...), email: Optional[str] = Form(None)):
     try:
         contents = await file.read()
         file_name = (file.filename or "").lower()
@@ -390,7 +393,7 @@ async def handle_ticket_data(conn: DbSessionPostgres, db: DbSession, file:Upload
 
 
 @app.post("/process_file_replace")
-async def upload_sla_data(db: DbSession, file: UploadFile = File(...), email: str | None = Form(None)):
+async def upload_sla_data(db: DbSession, file: UploadFile = File(...), email: Optional[str] = Form(None)):
     try:
         contents = await file.read()
         file_name = (file.filename or "").lower()
@@ -928,7 +931,8 @@ async def callFailedIdoc():
     print(f"Inside Failed Idoc")
     async with hp.AsyncClient(timeout=30) as client:
         response = await client.get(
-            "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/s4hodata/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
+            #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/s4hodata/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
+            "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
             auth=hp.BasicAuth("abaphana82", "welcome@82"),
             headers={"Accept-Encoding": "application/gzip"}
     )
@@ -985,7 +989,8 @@ async def reTriggerFailedIdoc(request: dict = Body(...), db:Session = Depends(ge
 
     async with hp.AsyncClient(timeout=30) as client:
         csrf_response = await client.get(
-            "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata",
+            #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata",
+            "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata",
             auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
             headers={
                 "Accept-Encoding": "application/gzip",
@@ -1015,7 +1020,8 @@ async def reTriggerFailedIdoc(request: dict = Body(...), db:Session = Depends(ge
         
    
         response = await client.post(
-            "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc",
+            #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc",
+            "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc",
             json=body,
             auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
             headers={
@@ -1065,7 +1071,8 @@ async def bulkFailedIdocRetrigger(request: dict = Body(...), db:Session = Depend
 
     async with hp.AsyncClient(timeout=30) as client:
         csrf_response = await client.get(
-            "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata",
+            #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata",
+            "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata",
             auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
             headers={
                 "Accept-Encoding": "application/gzip",
@@ -1124,7 +1131,8 @@ async def bulkFailedIdocRetrigger(request: dict = Body(...), db:Session = Depend
         
    
         response = await client.post(
-            "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch",
+            #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch",
+            "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch",
             data=body,
             auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
             headers={
