@@ -26,7 +26,7 @@ except ImportError:
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker, declarative_base
 from database_gcp import Base, engine, get_db, get_postgres_db_conn
-from models import SlaTicketData, SAPUser 
+from models import SlaTicketData
 from schemas import SlaTicketCreate
 import sys
 sys.path.append(
@@ -47,6 +47,11 @@ DbSessionVector = Annotated[Session, Depends(get_db_connection)]
 
 FERNET_KEY = os.environ.get("FERNET_KEY")
 cipher = Fernet(FERNET_KEY.encode()) if FERNET_KEY else None
+
+# SAP OData Basic Auth — read from .env (SAP_USERNAME/SAP_PASSWORD), same credentials
+# used by api/self_service_api.py. Falls back to the known-working demo login.
+SAP_USERNAME = os.environ.get("SAP_USERNAME", "abaphana82")
+SAP_PASSWORD = os.environ.get("SAP_PASSWORD", "welcome@82")
 
 client = OpenAI(api_key=ConfigParams.openai_api_key)
 
@@ -933,7 +938,7 @@ async def callFailedIdoc():
         response = await client.get(
             #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/s4hodata/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
             "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
-            auth=hp.BasicAuth("abaphana82", "welcome@82"),
+            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
             headers={"Accept-Encoding": "application/gzip"}
     )
 
@@ -966,32 +971,17 @@ async def callFailedIdoc():
     }
 
 @app.post("/retrigger-idocs")
-async def reTriggerFailedIdoc(request: dict = Body(...), db:Session = Depends(get_db)):
+async def reTriggerFailedIdoc(request: dict = Body(...)):
     IvDocnum = request.get("idocno")
-    user_email = request.get("email")
 
-    sap_credential = db.query(SAPUser).filter(SAPUser.email == user_email).first()
-
-    if not sap_credential:
-        raise HTTPException(status_code=500, detail="SAP Credentials for this user does not exist")
-
-    logger.info(f"SAP User: {sap_credential.sapuserid}")
-    logger.info(f"SAP Password: {decrypt_password(sap_credential.password_hash)}")
+    logger.info(f"SAP User: {SAP_USERNAME}")
     csrf_response = {}
-    try:
-        print("========== START ==========", flush=True)
-        print("SAP User:", sap_credential.sapuserid, flush=True)
-        print("SAP Password: ", sap_credential.password_hash, flush=True)
-        print("========== END ==========", flush=True)
-    except Exception as e:
-        print("Error occurred in printing username and password", e)
-        raise
 
     async with hp.AsyncClient(timeout=30) as client:
         csrf_response = await client.get(
             #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata",
             "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata",
-            auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
+            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
             headers={
                 "Accept-Encoding": "application/gzip",
                 "x-csrf-token": "fetch"
@@ -1023,7 +1013,7 @@ async def reTriggerFailedIdoc(request: dict = Body(...), db:Session = Depends(ge
             #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/retrigger-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc",
             "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc",
             json=body,
-            auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
+            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
             headers={
                 "Accept-Encoding": "application/gzip",
                 "x-csrf-token": csrf_token,
@@ -1048,32 +1038,15 @@ async def reTriggerFailedIdoc(request: dict = Body(...), db:Session = Depends(ge
     }
 
 @app.post("/retrigger-bulk-idocs")
-async def bulkFailedIdocRetrigger(request: dict = Body(...), db:Session = Depends(get_db)):
-    #IvDocnum = request.get("idocno")
-    user_email = request.get("email")
-
-    sap_credential = db.query(SAPUser).filter(SAPUser.email == user_email).first()
-
-    if not sap_credential:
-        raise HTTPException(status_code=500, detail="SAP Credentials for this user does not exist")
-
-    logger.info(f"SAP User: {sap_credential.sapuserid}")
-    logger.info(f"SAP Password: {decrypt_password(sap_credential.password_hash)}")
+async def bulkFailedIdocRetrigger(request: dict = Body(...)):
+    logger.info(f"SAP User: {SAP_USERNAME}")
     csrf_response = {}
-    try:
-        print("========== START ==========", flush=True)
-        print("SAP User:", sap_credential.sapuserid, flush=True)
-        print("SAP Password: ", sap_credential.password_hash, flush=True)
-        print("========== END ==========", flush=True)
-    except Exception as e:
-        print("Error occurred in printing username and password", e)
-        raise
 
     async with hp.AsyncClient(timeout=30) as client:
         csrf_response = await client.get(
             #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata",
             "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata",
-            auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
+            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
             headers={
                 "Accept-Encoding": "application/gzip",
                 "x-csrf-token": "fetch"
@@ -1134,7 +1107,7 @@ async def bulkFailedIdocRetrigger(request: dict = Body(...), db:Session = Depend
             #"https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/7c7a6dc7trial/bulk-idoc-retrigger/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch",
             "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch",
             data=body,
-            auth=hp.BasicAuth(sap_credential.sapuserid, decrypt_password(sap_credential.password_hash)),
+            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
             headers={
                 "Accept-Encoding": "gzip, deflate",
                 "x-csrf-token": csrf_token,
