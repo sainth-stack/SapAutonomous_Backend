@@ -1160,69 +1160,65 @@ async def bulkFailedIdocRetrigger(request: dict = Body(...), db:Session = Depend
 
 @app.get("/background-jobs")
 async def callBgJobs():
-    #url="https://65201231trial.it-cpitrial05-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
-    #url="https://b7a0f5batrial.it-cpitrial06-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
-    url = "https://7c7a6dc7trial.it-cpitrial05-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
-    #url = ConfigParams.api_integration_proxy
-    headers={
-        "Content-Type": "application/json"
-    }
-    #cet = ZoneInfo("Europe/Berlin")
+    # Working CPI + SAP OData (same as Backend_Bainocular_FastAPI)
+    url = "https://a107a740trial.it-cpitrial05-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
+    headers = {"Content-Type": "application/json"}
     job_data = []
     cet = ZoneInfo("Asia/Kolkata")
     now = datetime.now(tz=cet)
-    now = now.replace(minute=0, second=0, microsecond=0)
-    print(now)
-    print(now.strftime("%H%M%S"))
+    # Today's jobs from midnight through current time (include minutes/seconds)
+    sap_date = now.strftime("%Y-%m-%dT00:00:00")
+    start_time = "000000"
     end_time = now.strftime("%H%M%S")
-    one_hour_ago = now - timedelta(hours=1)
-    sap_date = now.strftime("%Y-%m-%dT00:00:00")     # only date part
-    start_time = one_hour_ago.strftime("%H%M%S")
-    print(one_hour_ago)
-    print(f"{sap_date} || {start_time}")
+    print(f"{sap_date} || {start_time}..{end_time}")
     body = {
-        "baseUrl":"http://sapai.com:8000/sap/opu/odata/sap/ZSB_JOB_MONITOR",
+        "baseUrl": "http://bainocularsapai.com:8000/sap/opu/odata/sap/ZSB_JOB_MONITOR",
         "entity": "Z_I_FA_JOBS",
-        "method":"GET",
+        "method": "GET",
         "queryParams": {
             "$top": "1000",
-            "$filter": f"ExecutionStartDate eq datetime'{sap_date}' and ExecutionStartTime ge '{start_time}' and ExecutionStartTime le '{end_time}'"
-            }
+            "$filter": (
+                f"ExecutionStartDate eq datetime'{sap_date}' "
+                f"and ExecutionStartTime ge '{start_time}' "
+                f"and ExecutionStartTime le '{end_time}'"
+            ),
+        },
     }
 
-    auth = hp.BasicAuth("sb-6cb231cf-fc32-4b28-a8ac-78aeed83c072!b658051|it-rt-7c7a6dc7trial!b26655", "e214bda0-faac-470d-be84-edce7b74ad64$lPCMVp-AshULBJK6gyBXMI-S97dJ5WSrTRKep37aCGE=")
-
-    async with hp.AsyncClient() as client:
+    auth = hp.BasicAuth(
+        "sb-98017383-8d5f-4ff8-b27e-418e4b17372b!b674382|it-rt-a107a740trial!b26655",
+        "cb3230a1-c7be-43d3-b2c2-267de2f23033$ht8cAHHFzignC0Ej4iTiqNwtY3gWQyCEG5VvHO8NJdQ=",
+    )
+    async with hp.AsyncClient(timeout=60.0) as client:
         try:
-            #response = await client.get(url, headers=headers, auth=auth)
             response = await client.post(url, json=body, headers=headers, auth=auth)
             response.raise_for_status()
-
-             # 👇 Get XML as text
             xml_data = response.text
-
-            # 👇 Convert XML → Python dict
             dict_data = xmltodict.parse(xml_data)
-
-            # 👇 Optional: convert OrderedDict to normal dict
             json_data = json.loads(json.dumps(dict_data))
             job_data = normalize_jobs(json_data)
             print(len(job_data))
-        except (hp.RequestError, hp.HTTPStatusError, ValueError) as e:
+        except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
             print(f"Error Fetching the data: {e}")
-
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to fetch background jobs from SAP: {e}",
+            ) from e
 
     return job_data
 
 
 def normalize_jobs(data):
     cleaned = []
-
     entries = data.get("feed", {}).get("entry", [])
+    # xmltodict returns a dict for a single entry, list for multiple
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not entries:
+        return cleaned
 
     for e in entries:
         props = e["content"]["m:properties"]
-
         job = {
             "JobName": props.get("d:JobName"),
             "JobCount": props.get("d:JobCount"),
@@ -1242,9 +1238,8 @@ def normalize_jobs(data):
             "EventId": props.get("d:EventId"),
             "StartHour": props.get("d:StartHour"),
             "IsWeekend": props.get("d:IsWeekend"),
-            "LastChangeOn": props.get("d:LastChangeOn")
+            "LastChangeOn": props.get("d:LastChangeOn"),
         }
-
         cleaned.append(job)
 
     return cleaned
