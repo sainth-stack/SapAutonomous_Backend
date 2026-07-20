@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 
 from api.self_service_api import sap_router
 from api.configuration_api import config_router
+from api.sap_monitoring_api import monitoring_router
+from api.log_api import app as app_logging_api
 
 import os
 import uvicorn
@@ -53,6 +55,8 @@ def create_app() -> FastAPI:
 
     app.include_router(config_router)
     app.include_router(sap_router)
+    app.include_router(monitoring_router)
+    app.include_router(app_logging_api)
     return app
 
 

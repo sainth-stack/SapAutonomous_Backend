@@ -223,6 +223,22 @@ async def download_logs():
         raise HTTPException(status_code=404, detail="No log file found for today yet.")
 
 
+async def add_log(payload):
+    """Forward a structured log payload to the shared log endpoint."""
+    print("Inside add logs")
+    try:
+        async with hp.AsyncClient() as c:
+            log_response = await c.post(
+                url="https://api-dev.bainocular.seleccionconsulting.com/log",
+                json=payload,
+            )
+            print(payload, log_response)
+        return log_response.json()
+    except Exception as e:
+        print(f"Logging Failed: {e}")
+        return None
+
+
 async def add_user_log(module_name: str, program_name: str, user: str, logType: str, content: str):
 
     payload = {

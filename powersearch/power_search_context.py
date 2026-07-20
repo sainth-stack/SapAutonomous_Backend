@@ -13,7 +13,6 @@ import requests
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
-from ticket_src.ams_kedb import add_log	   
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +21,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 from bainocular_configuration import ConfigParams
-from api.log_api import add_user_log
+from api.log_api import add_user_log, add_log
 load_dotenv()
 
 # ─────────────────────────────────────────────────────────────────────────────
