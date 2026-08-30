@@ -2,7 +2,7 @@
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx as hp
@@ -16,28 +16,34 @@ monitoring_router = APIRouter(tags=["SAP Monitoring"])
 SAP_USERNAME = os.environ.get("SAP_USERNAME", "abaphana82")
 SAP_PASSWORD = os.environ.get("SAP_PASSWORD", "welcome@82")
 
+# Same APIM routes as Backend_Bainocular_FastAPI/ticket_src/ams_classification.py
+APIM_BASE = (
+    "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
+    "/7c7a6dc7trial"
+)
 FAILED_IDOCS_URL = (
-    "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/a107a740trial/retrigger-bulk-idoc/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json"
+    f"{APIM_BASE}/sapdata/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json"
 )
-RETRIGGER_METADATA_URL = (
-    "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/$metadata"
-)
-RETRIGGER_POST_URL = (
-    "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/a107a740trial/retrigger-bulk-idoc/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc"
-)
+RETRIGGER_METADATA_URL = f"{APIM_BASE}/sapdata/ZREPROCESS_IDOC_SRV_SRV/$metadata"
+RETRIGGER_POST_URL = f"{APIM_BASE}/sapdata/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc"
 BULK_RETRIGGER_METADATA_URL = (
-    "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata"
+    f"{APIM_BASE}/sapv4/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata"
 )
 BULK_RETRIGGER_POST_URL = (
-    "https://a107a740trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/a107a740trial/retrigger-idoc/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch"
+    f"{APIM_BASE}/sapv4/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch"
 )
+# Same CPI iFlow + credentials as Backend_Bainocular_FastAPI/ticket_src/ams_classification.py
 BACKGROUND_JOBS_CPI_URL = (
-    "https://a107a740trial.it-cpitrial05-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
+    "https://7c7a6dc7trial.it-cpitrial06-rt.cfapps.us10-001.hana.ondemand.com/http/s4odata"
+)
+BACKGROUND_JOBS_CPI_USER = (
+    "sb-23de4f37-ada1-48f4-b7ef-7084896f983f!b658051|it-rt-7c7a6dc7trial!b55215"
+)
+BACKGROUND_JOBS_CPI_PASSWORD = (
+    "e6429dba-59c2-43d8-a6ad-3c2eb08e23cb$zyz_QSzXy6Na4cHT3M7Imj-2uzxihkvhN1stuekUL4g="
+)
+BACKGROUND_JOBS_SAP_BASE_URL = (
+    "http://sapai.com:8000/sap/opu/odata/sap/ZSB_JOB_MONITOR"
 )
 
 
@@ -50,7 +56,7 @@ def normalize_jobs(data):
         return cleaned
 
     for e in entries:
-        props = e["content"]["m:properties"]
+        props = e.get("content", {}).get("m:properties", {})
         cleaned.append({
             "JobName": props.get("d:JobName"),
             "JobCount": props.get("d:JobCount"),
@@ -77,35 +83,41 @@ def normalize_jobs(data):
 
 @monitoring_router.get("/failed-idocs")
 async def call_failed_idoc():
+    """Fetch failed IDocs via the same APIM proxy used by Backend_Bainocular_FastAPI."""
+    idocs = []
     async with hp.AsyncClient(timeout=30) as client:
-        response = await client.get(
-            FAILED_IDOCS_URL,
-            auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
-            headers={"Accept-Encoding": "application/gzip"},
-        )
+        try:
+            response = await client.get(
+                FAILED_IDOCS_URL,
+                auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
+                headers={"Accept-Encoding": "application/gzip"},
+            )
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("d", {}).get("results", [])
+            idocs = [
+                {
+                    "idoc_number": item["IDocNumber"],
+                    "status": item["IDocStatus"],
+                    "message_type": item["MessageType"],
+                    "status_text": item["StatusText"],
+                    "Direction": item["DirectionText"],
+                    "sender": item["SenderPartnerNumber"],
+                    "receiver": item["ReceiverPartnerNumber"],
+                    "sender_type": item["SenderPartnerType"],
+                    "receiver_type": item["ReceiverPartnerType"],
+                    "creation_date": item["CreatedDate"],
+                    "creation_time": item["CreatedTime"],
+                    "last_updated_date": item["LastUpdatedDate"],
+                    "last_updated_time": item["LastUpdatedTime"],
+                    "error_category": item["ErrorCategory"],
+                }
+                for item in results
+            ]
+            logger.info("failed-idocs returned %s rows", len(idocs))
+        except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
+            logger.error("Error fetching failed idocs: %s", e)
 
-    response.raise_for_status()
-    data = response.json()
-    results = data.get("d", {}).get("results", [])
-    idocs = [
-        {
-            "idoc_number": item["IDocNumber"],
-            "status": item["IDocStatus"],
-            "message_type": item["MessageType"],
-            "status_text": item["StatusText"],
-            "Direction": item["DirectionText"],
-            "sender": item["SenderPartnerNumber"],
-            "receiver": item["ReceiverPartnerNumber"],
-            "sender_type": item["SenderPartnerType"],
-            "receiver_type": item["ReceiverPartnerType"],
-            "creation_date": item["CreatedDate"],
-            "creation_time": item["CreatedTime"],
-            "last_updated_date": item["LastUpdatedDate"],
-            "last_updated_time": item["LastUpdatedTime"],
-            "error_category": item["ErrorCategory"],
-        }
-        for item in results
-    ]
     return {"result": idocs}
 
 
@@ -198,14 +210,19 @@ async def bulk_failed_idoc_retrigger(request: dict = Body(...)):
 
 @monitoring_router.get("/background-jobs")
 async def call_bg_jobs():
+    """Fetch SAP background jobs via the same CPI proxy used by Backend_Bainocular_FastAPI."""
     headers = {"Content-Type": "application/json"}
+    job_data = []
     cet = ZoneInfo("Asia/Kolkata")
-    now = datetime.now(tz=cet)
-    sap_date = now.strftime("%Y-%m-%dT00:00:00")
-    start_time = "000000"
+    now = datetime.now(tz=cet).replace(minute=0, second=0, microsecond=0)
     end_time = now.strftime("%H%M%S")
+    one_hour_ago = now - timedelta(hours=1)
+    sap_date = now.strftime("%Y-%m-%dT00:00:00")
+    start_time = one_hour_ago.strftime("%H%M%S")
+    logger.info("background-jobs window: %s || %s || %s", sap_date, start_time, end_time)
+
     body = {
-        "baseUrl": "http://bainocularsapai.com:8000/sap/opu/odata/sap/ZSB_JOB_MONITOR",
+        "baseUrl": BACKGROUND_JOBS_SAP_BASE_URL,
         "entity": "Z_I_FA_JOBS",
         "method": "GET",
         "queryParams": {
@@ -217,10 +234,7 @@ async def call_bg_jobs():
             ),
         },
     }
-    auth = hp.BasicAuth(
-        "sb-98017383-8d5f-4ff8-b27e-418e4b17372b!b674382|it-rt-a107a740trial!b26655",
-        "cb3230a1-c7be-43d3-b2c2-267de2f23033$ht8cAHHFzignC0Ej4iTiqNwtY3gWQyCEG5VvHO8NJdQ=",
-    )
+    auth = hp.BasicAuth(BACKGROUND_JOBS_CPI_USER, BACKGROUND_JOBS_CPI_PASSWORD)
 
     async with hp.AsyncClient(timeout=60.0) as client:
         try:
@@ -230,9 +244,9 @@ async def call_bg_jobs():
             response.raise_for_status()
             dict_data = xmltodict.parse(response.text)
             json_data = json.loads(json.dumps(dict_data))
-            return normalize_jobs(json_data)
+            job_data = normalize_jobs(json_data)
+            logger.info("background-jobs returned %s rows", len(job_data))
         except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to fetch background jobs from SAP: {e}",
-            ) from e
+            logger.error("Error fetching background jobs: %s", e)
+
+    return job_data
