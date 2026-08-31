@@ -1,21 +1,25 @@
+# Web framework & server
 fastapi
 uvicorn
-pandas
-numpy==1.26.4
 python-multipart
-openpyxl
-joblib
-scikit-learn
-requests
-openai
-python-dotenv
-sqlalchemy
-bcrypt>=4.0
-chromadb
+
+# HTTP clients
 httpx
-nltk
-langchain-openai
+requests
+
+# SAP / data parsing
 xmltodict
+
+# AI
+openai
+
+# Config & validation
+python-dotenv
 pydantic
-gunicorn
+
+# Database
+sqlalchemy
+
+# Auth & secrets (configuration API)
+bcrypt>=4.0
 cryptography
