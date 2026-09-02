@@ -16,21 +16,45 @@ monitoring_router = APIRouter(tags=["SAP Monitoring"])
 SAP_USERNAME = os.environ.get("SAP_USERNAME", "abaphana82")
 SAP_PASSWORD = os.environ.get("SAP_PASSWORD", "welcome@82")
 
-# Same APIM routes as Backend_Bainocular_FastAPI/ticket_src/ams_classification.py
-APIM_BASE = (
-    "https://7c7a6dc7trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
-    "/7c7a6dc7trial"
+# SAP Integration Suite trial APIM for monitoring (failed-idocs / retrigger).
+# Path prefix is /odatasap on tenant e1b04be9trial (publicly reachable; returns data).
+_DEFAULT_MONITORING_APIM_BASE = (
+    "https://e1b04be9trial-trial.integrationsuitetrial-apim.us10.hana.ondemand.com"
+    "/e1b04be9trial/odatasap"
 )
-FAILED_IDOCS_URL = (
-    f"{APIM_BASE}/sapdata/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json"
+SAP_MONITORING_APIM_BASE = os.environ.get(
+    "SAP_MONITORING_APIM_BASE", _DEFAULT_MONITORING_APIM_BASE
+).rstrip("/")
+# Optional: delegate monitoring to another backend when direct APIM is unavailable
+SAP_MONITORING_PROXY_BASE = os.environ.get("SAP_MONITORING_PROXY_BASE", "").strip().rstrip("/")
+
+FAILED_IDOCS_URL = os.environ.get(
+    "SAP_FAILED_IDOCS_URL",
+    f"{SAP_MONITORING_APIM_BASE}/ZC_IDOC_FAILED_CDS/ZC_IDOC_FAILED?$format=json",
 )
-RETRIGGER_METADATA_URL = f"{APIM_BASE}/sapdata/ZREPROCESS_IDOC_SRV_SRV/$metadata"
-RETRIGGER_POST_URL = f"{APIM_BASE}/sapdata/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc"
+RETRIGGER_METADATA_URL = (
+    f"{SAP_MONITORING_APIM_BASE}/ZREPROCESS_IDOC_SRV_SRV/$metadata"
+)
+RETRIGGER_POST_URL = (
+    f"{SAP_MONITORING_APIM_BASE}/ZREPROCESS_IDOC_SRV_SRV/reprocess_idoc"
+)
+# Bulk retrigger may use a separate v4 route on some tenants
+SAP_MONITORING_APIM_V4_BASE = os.environ.get(
+    "SAP_MONITORING_APIM_V4_BASE",
+    SAP_MONITORING_APIM_BASE.replace("/odatasap", "/odatasapv4"),
+).rstrip("/")
 BULK_RETRIGGER_METADATA_URL = (
-    f"{APIM_BASE}/sapv4/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata"
+    f"{SAP_MONITORING_APIM_V4_BASE}/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$metadata"
 )
 BULK_RETRIGGER_POST_URL = (
-    f"{APIM_BASE}/sapv4/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch"
+    f"{SAP_MONITORING_APIM_V4_BASE}/zidoc_reprocess_srv/srvd/sap/zidoc_reprocess_sd/0001/$batch"
+)
+
+logger.info(
+    "SAP monitoring config: apim_base=%s proxy_base=%s failed_idocs_url=%s",
+    SAP_MONITORING_APIM_BASE,
+    SAP_MONITORING_PROXY_BASE or "(direct)",
+    FAILED_IDOCS_URL,
 )
 # Same CPI iFlow + credentials as Backend_Bainocular_FastAPI/ticket_src/ams_classification.py
 BACKGROUND_JOBS_CPI_URL = (
@@ -81,12 +105,51 @@ def normalize_jobs(data):
     return cleaned
 
 
+def _map_failed_idoc_rows(results):
+    return [
+        {
+            "idoc_number": item["IDocNumber"],
+            "status": item["IDocStatus"],
+            "message_type": item["MessageType"],
+            "status_text": item["StatusText"],
+            "Direction": item["DirectionText"],
+            "sender": item["SenderPartnerNumber"],
+            "receiver": item["ReceiverPartnerNumber"],
+            "sender_type": item["SenderPartnerType"],
+            "receiver_type": item["ReceiverPartnerType"],
+            "creation_date": item["CreatedDate"],
+            "creation_time": item["CreatedTime"],
+            "last_updated_date": item["LastUpdatedDate"],
+            "last_updated_time": item["LastUpdatedTime"],
+            "error_category": item["ErrorCategory"],
+        }
+        for item in results
+    ]
+
+
 @monitoring_router.get("/failed-idocs")
 async def call_failed_idoc():
-    """Fetch failed IDocs via the same APIM proxy used by Backend_Bainocular_FastAPI."""
+    """Fetch failed IDocs — same SAP APIM as Bainocular, or via SAP_MONITORING_PROXY_BASE."""
     idocs = []
-    async with hp.AsyncClient(timeout=30) as client:
+    async with hp.AsyncClient(timeout=60.0) as client:
         try:
+            if SAP_MONITORING_PROXY_BASE:
+                proxy_url = f"{SAP_MONITORING_PROXY_BASE}/failed-idocs"
+                logger.info("failed-idocs via proxy: %s", proxy_url)
+                response = await client.get(
+                    proxy_url, headers={"Accept": "application/json"}
+                )
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data.get("result"), list):
+                    logger.info("failed-idocs proxy returned %s rows", len(data["result"]))
+                    return data
+                results = data.get("d", {}).get("results", [])
+                idocs = _map_failed_idoc_rows(results)
+                logger.info("failed-idocs proxy (odata) returned %s rows", len(idocs))
+                return {"result": idocs}
+
+            logger.info("failed-idocs direct APIM: %s", FAILED_IDOCS_URL)
             response = await client.get(
                 FAILED_IDOCS_URL,
                 auth=hp.BasicAuth(SAP_USERNAME, SAP_PASSWORD),
@@ -95,25 +158,7 @@ async def call_failed_idoc():
             response.raise_for_status()
             data = response.json()
             results = data.get("d", {}).get("results", [])
-            idocs = [
-                {
-                    "idoc_number": item["IDocNumber"],
-                    "status": item["IDocStatus"],
-                    "message_type": item["MessageType"],
-                    "status_text": item["StatusText"],
-                    "Direction": item["DirectionText"],
-                    "sender": item["SenderPartnerNumber"],
-                    "receiver": item["ReceiverPartnerNumber"],
-                    "sender_type": item["SenderPartnerType"],
-                    "receiver_type": item["ReceiverPartnerType"],
-                    "creation_date": item["CreatedDate"],
-                    "creation_time": item["CreatedTime"],
-                    "last_updated_date": item["LastUpdatedDate"],
-                    "last_updated_time": item["LastUpdatedTime"],
-                    "error_category": item["ErrorCategory"],
-                }
-                for item in results
-            ]
+            idocs = _map_failed_idoc_rows(results)
             logger.info("failed-idocs returned %s rows", len(idocs))
         except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
             logger.error("Error fetching failed idocs: %s", e)
@@ -238,6 +283,18 @@ async def call_bg_jobs():
 
     async with hp.AsyncClient(timeout=60.0) as client:
         try:
+            if SAP_MONITORING_PROXY_BASE:
+                proxy_url = f"{SAP_MONITORING_PROXY_BASE}/background-jobs"
+                logger.info("background-jobs via proxy: %s", proxy_url)
+                response = await client.get(
+                    proxy_url, headers={"Accept": "application/json"}
+                )
+                response.raise_for_status()
+                job_data = response.json()
+                if isinstance(job_data, list):
+                    logger.info("background-jobs proxy returned %s rows", len(job_data))
+                    return job_data
+
             response = await client.post(
                 BACKGROUND_JOBS_CPI_URL, json=body, headers=headers, auth=auth
             )
