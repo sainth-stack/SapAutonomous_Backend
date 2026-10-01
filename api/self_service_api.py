@@ -63,8 +63,9 @@ SAP_BATCH_API = os.getenv("SAP_BATCH_API", "https://api.sap.com/batch")
 # Local cache: all sales orders fetched from SAP and stored in JSON
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 SALES_ORDERS_JSON = DATA_DIR / "sales_orders.json"
+PURCHASE_ORDERS_JSON = DATA_DIR / "purchase_orders.json"
 
-# Sample schema for Sales Order (A_SalesOrder) — used by LLM to generate correct $filter/$orderby
+# Sample schemas — used by LLM to generate correct $filter/$orderby
 SAMPLE_SALES_ORDER_SCHEMA = """
 Sales Order entity (A_SalesOrder) — OData fields:
 - SalesOrder: string (key, e.g. "1", "2")
@@ -78,6 +79,24 @@ Sales Order entity (A_SalesOrder) — OData fields:
 - OverallSDProcessStatus: string
 - TotalTaxAmount: string
 """
+
+SAMPLE_PURCHASE_ORDER_SCHEMA = """
+Purchase Order entity (A_PurchaseOrder) — OData fields:
+- PurchaseOrder: string (key, e.g. "450000001", "450000002")
+- PurchaseOrderType: string (e.g. "NB", "FO")
+- Supplier: string (vendor number, e.g. "V10001")
+- SupplierName: string
+- CompanyCode: string
+- PurchasingOrganization: string
+- PurchasingGroup: string
+- CreationDate: date
+- PurchaseOrderDate: date
+- DocumentCurrency: string (e.g. "USD", "EUR")
+- TotalNetAmount: string (decimal amount)
+- PurchasingProcessingStatus: string
+"""
+
+SAMPLE_ENTITY_SCHEMA = SAMPLE_SALES_ORDER_SCHEMA + "\n" + SAMPLE_PURCHASE_ORDER_SCHEMA
 
 # Log SAP config at startup (no credentials)
 logger.info(
@@ -346,22 +365,47 @@ def _load_sales_orders_from_json() -> Optional[List[Dict[str, Any]]]:
         return None
 
 
-def _apply_intent_to_sales_orders(
-    rows: List[Dict[str, Any]], intent: Dict[str, Any]
+def _apply_simple_odata_filter(
+    rows: List[Dict[str, Any]], filter_expr: Optional[str]
 ) -> List[Dict[str, Any]]:
-    """Apply $orderby and $top from intent to a list of sales order rows. Strip __metadata."""
+    """Best-effort local evaluation of simple OData $filter (field eq 'value')."""
+    if not filter_expr or not str(filter_expr).strip():
+        return rows
+    expr = str(filter_expr).strip()
+    parts = re.split(r"\s+and\s+", expr, flags=re.IGNORECASE)
+    filtered = rows
+    for part in parts:
+        part = part.strip().strip("()")
+        match = re.match(r"(\w+)\s+eq\s+'([^']*)'", part, flags=re.IGNORECASE)
+        if not match:
+            continue
+        field, value = match.group(1), match.group(2)
+        filtered = [r for r in filtered if str(r.get(field, "")) == value]
+    return filtered
+
+
+def _apply_intent_to_cached_rows(
+    rows: List[Dict[str, Any]], intent: Dict[str, Any], apply_top: bool = True
+) -> List[Dict[str, Any]]:
+    """Apply $filter, $orderby and optional $top from intent to cached OData rows."""
     result = []
     for row in rows:
         if not isinstance(row, dict):
             result.append(row)
             continue
-        cleaned = {k: _format_sap_date(v) if isinstance(v, str) and "/Date(" in str(v) else v for k, v in row.items() if k != "__metadata"}
+        cleaned = {
+            k: _format_sap_date(v) if isinstance(v, str) and "/Date(" in str(v) else v
+            for k, v in row.items()
+            if k != "__metadata"
+        }
         result.append(cleaned)
+    result = _apply_simple_odata_filter(result, intent.get("$filter"))
     orderby = intent.get("$orderby")
     if orderby:
         parts = orderby.strip().split()
         field = parts[0]
         desc = len(parts) > 1 and parts[1].lower() == "desc"
+
         def key(r):
             v = r.get(field)
             if v is None:
@@ -370,15 +414,128 @@ def _apply_intent_to_sales_orders(
                 return float(str(v).replace(",", "."))
             except (ValueError, TypeError):
                 return str(v)
+
         result.sort(key=key, reverse=desc)
-    top = intent.get("$top")
-    if top:
-        try:
-            n = int(top)
-            result = result[:n]
-        except (ValueError, TypeError):
-            pass
+    if apply_top:
+        top = intent.get("$top")
+        if top:
+            try:
+                n = int(top)
+                result = result[:n]
+            except (ValueError, TypeError):
+                pass
     return result
+
+
+def _normalize_entity_name(entity: Any) -> str:
+    name = str(entity or "").strip()
+    if name in ("PurchaseOrder", "A_PurchaseOrder"):
+        return "A_PurchaseOrder"
+    if name in ("SalesOrder", "A_SalesOrder"):
+        return "A_SalesOrder"
+    return name
+
+
+def _refine_intent_from_keywords(user_input: str, intent: Dict[str, Any]) -> Dict[str, Any]:
+    """Disambiguate sales vs purchase order when the user query is explicit."""
+    q = f" {user_input.lower()} "
+    po_signals = (
+        "purchase order",
+        "purchase orders",
+        " po ",
+        " pos ",
+        "procurement",
+        "supplier",
+        "vendor",
+    )
+    so_signals = (
+        "sales order",
+        "sales orders",
+        " sold-to",
+        "sold to",
+        "customer order",
+        "customer orders",
+    )
+    has_po = any(signal in q for signal in po_signals)
+    has_so = any(signal in q for signal in so_signals)
+
+    refined = dict(intent)
+    if has_po and not has_so:
+        refined["entity"] = "A_PurchaseOrder"
+        refined["service"] = "API_PURCHASEORDER_PROCESS_SRV"
+    elif has_so and not has_po:
+        refined["entity"] = "A_SalesOrder"
+        refined["service"] = "API_SALES_ORDER_SRV"
+    refined["entity"] = _normalize_entity_name(refined.get("entity"))
+    return refined
+
+
+def _load_purchase_orders_from_json() -> Optional[List[Dict[str, Any]]]:
+    if not PURCHASE_ORDERS_JSON.exists():
+        return None
+    try:
+        with open(PURCHASE_ORDERS_JSON) as f:
+            data = json.load(f)
+        return data.get("d", {}).get("results", [])
+    except Exception as e:
+        logger.warning("Failed to load purchase_orders.json: %s", e)
+        return None
+
+
+def _ensure_purchase_orders_cached() -> None:
+    if PURCHASE_ORDERS_JSON.exists():
+        return
+    logger.warning("purchase_orders.json missing — expected synthetic data at %s", PURCHASE_ORDERS_JSON)
+
+
+def _query_cached_entity(
+    rows: List[Dict[str, Any]],
+    intent: Dict[str, Any],
+    key_field: str,
+    cache_label: str,
+) -> Dict[str, Any]:
+    operation = intent.get("operation", "GET_LIST")
+    if operation == "GET_SINGLE":
+        single_id = intent.get("value")
+        matched = next((r for r in rows if str(r.get(key_field, "")) == str(single_id)), None)
+        result_rows = _apply_intent_to_cached_rows([matched] if matched else [], intent)
+        total_count = len(result_rows)
+    else:
+        filtered_rows = _apply_intent_to_cached_rows(rows, intent, apply_top=False)
+        result_rows = _apply_intent_to_cached_rows(rows, intent, apply_top=True)
+        total_count = len(filtered_rows)
+
+    return {
+        "d": {"results": result_rows, "totalCount": total_count},
+        "url_used": f"sap-cache:{cache_label}",
+        "intent_debug": intent,
+    }
+
+
+def _should_show_results_table(user_input: str, entity: str) -> bool:
+    q = f" {user_input.lower()} "
+    table_keywords = (
+        "list",
+        "table",
+        "tabular",
+        "in list",
+        "in table",
+        "as list",
+        "as table",
+        "show all",
+        "display as",
+    )
+    if any(kw in q for kw in table_keywords):
+        return True
+
+    list_verbs = ("list", "show", "all", "display", "give", "get")
+    if entity == "A_PurchaseOrder":
+        if any(kw in q for kw in ("purchase order", "purchase orders", " po ", " pos ")):
+            return any(kw in q for kw in list_verbs)
+    if entity == "A_SalesOrder":
+        if any(kw in q for kw in ("sales order", "sales orders")):
+            return any(kw in q for kw in list_verbs)
+    return False
 
 
 # --- Endpoints ---
@@ -395,7 +552,7 @@ You are an enterprise integration assistant. You will receive a SAMPLE SCHEMA of
 Your job is to output a single JSON object that describes how to execute the query (service, entity, filters, order, limit).
 
 Sample schema of available data:
-""" + SAMPLE_SALES_ORDER_SCHEMA + """
+""" + SAMPLE_ENTITY_SCHEMA + """
 
 Standard SAP OData mapping:
 - Sales Order -> API_SALES_ORDER_SRV -> A_SalesOrder
@@ -403,14 +560,16 @@ Standard SAP OData mapping:
 - Purchase Order -> API_PURCHASEORDER_PROCESS_SRV -> A_PurchaseOrder
 
 Rules:
-- For a single entity (e.g. "sales order 4"), set value to the identifier ("4"), operation GET_SINGLE.
+- When the user mentions purchase order / PO / procurement / supplier, use A_PurchaseOrder (not sales order).
+- When the user mentions sales order / SO / sold-to / customer order, use A_SalesOrder (not purchase order).
+- For a single entity (e.g. "sales order 4" or "purchase order 450000001"), set value to the identifier, operation GET_SINGLE.
 - For lists, set value = "0", operation GET_LIST.
 - For "all" / "full list" / "give all" / "every" (no number), use GET_LIST and "$top" = "1000".
 - Use valid OData $filter syntax only (no "$filter=" prefix). Use $orderby with field name and "asc" or "desc".
 - For "top N" / "first N" / "N sales orders", set "$top" to that number (e.g. "5").
 - For "max" / "highest" amount: entity A_SalesOrderItem, "$orderby": "NetAmount desc", "$top": "1", value "0", GET_LIST.
 - For "min" / "lowest" amount: "$orderby": "NetAmount asc", "$top": "1".
-- Prefer Sales Order when ambiguous.
+- Do not guess: pick the entity that matches the user's words (sales vs purchase).
 
 Return ONLY this JSON (no markdown, no extra text):
 {
@@ -439,7 +598,7 @@ Return ONLY this JSON (no markdown, no extra text):
         parsed = _extract_json_object(llm_text)
         if not parsed:
             raise HTTPException(status_code=502, detail="LLM did not return valid JSON for SAP intent parsing.")
-        intent = parsed
+        intent = _refine_intent_from_keywords(user_input, parsed)
     except HTTPException:
         raise
     except Exception as exc:
@@ -450,28 +609,28 @@ Return ONLY this JSON (no markdown, no extra text):
     #    only allows collection fetches from the production server IP, not locally).
     #    Other entities: call SAP live directly.
     sap_payload: Dict[str, Any]
-    entity = intent.get("entity", "")
+    entity = _normalize_entity_name(intent.get("entity", ""))
     operation = intent.get("operation", "GET_LIST")
 
     if entity == "A_SalesOrder":
-        # Auto-fetch from SAP and populate cache if missing
         if not SALES_ORDERS_JSON.exists():
             _fetch_and_save_sales_orders()
         rows = _load_sales_orders_from_json()
+        if not rows:
+            raise HTTPException(
+                status_code=503,
+                detail="Sales orders data not available. Ensure data/sales_orders.json exists or configure SAP credentials.",
+            )
+        sap_payload = _query_cached_entity(rows, intent, "SalesOrder", str(SALES_ORDERS_JSON))
+    elif entity == "A_PurchaseOrder":
+        _ensure_purchase_orders_cached()
+        rows = _load_purchase_orders_from_json()
         if rows is None:
-            raise HTTPException(status_code=503, detail="Sales orders data not available and could not be fetched from SAP.")
-        if operation == "GET_SINGLE":
-            single_id = intent.get("value")
-            matched = next((r for r in rows if str(r.get("SalesOrder", "")) == str(single_id)), None)
-            result_rows = _apply_intent_to_sales_orders([matched] if matched else [], intent)
-        else:
-            result_rows = _apply_intent_to_sales_orders(rows, intent)
-
-        sap_payload = {
-            "d": {"results": result_rows, "totalCount": len(result_rows)},
-            "url_used": f"sap-cache:{SALES_ORDERS_JSON}",
-            "intent_debug": intent,
-        }
+            raise HTTPException(
+                status_code=503,
+                detail="Purchase orders data not available. Ensure data/purchase_orders.json exists.",
+            )
+        sap_payload = _query_cached_entity(rows, intent, "PurchaseOrder", str(PURCHASE_ORDERS_JSON))
     else:
         if not SAP_USERNAME or not SAP_PASSWORD:
             raise HTTPException(status_code=500, detail="SAP_USERNAME and SAP_PASSWORD must be configured")
@@ -516,8 +675,7 @@ Return ONLY this JSON (no markdown, no extra text):
     if not friendly_answer:
         friendly_answer = "<p>Here is the data for your request.</p>"
 
-    q = user_input.lower()
-    show_table = any(kw in q for kw in ("list", "table", "tabular", "in list", "in table", "as list", "as table", "show all", "display as"))
+    show_table = _should_show_results_table(user_input, entity)
 
     return {
         "input": user_input,
