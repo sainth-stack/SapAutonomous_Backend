@@ -5,6 +5,16 @@ venv/
 # Environment secrets
 .env
 
+# ChromaDB persistent index (rebuilt from data/similarity_tickets.csv)
+chroma_db/
+
+# ChromaDB persistent index (rebuilt from data/similarity_tickets.csv)
+chroma_db/
+
+# Full ticket export (large / business data) — place here to be auto-loaded
+data/similarity_tickets.csv
+data/similarity_tickets.tsv
+
 # Python cache
 __pycache__/
 *.py[cod]

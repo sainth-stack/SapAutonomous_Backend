@@ -12,6 +12,7 @@ from api.self_service_api import sap_router
 from api.configuration_api import config_router
 from api.sap_monitoring_api import monitoring_router
 from api.log_api import app as app_logging_api
+from api.similarity_api import similarity_router
 
 import os
 import uvicorn
@@ -25,6 +26,9 @@ _START_TIME = datetime.now(timezone.utc)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import threading
+    from similarity.ingest import ensure_seeded
+    threading.Thread(target=ensure_seeded, name="similarity-seed", daemon=True).start()
     yield
 
 
@@ -57,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(sap_router)
     app.include_router(monitoring_router)
     app.include_router(app_logging_api)
+    app.include_router(similarity_router)
     return app
 
 

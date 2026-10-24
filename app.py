@@ -10,6 +10,7 @@ from api.self_service_api import sap_router
 from api.configuration_api import config_router
 from api.sap_monitoring_api import monitoring_router
 from api.log_api import app as app_logging_api
+from api.similarity_api import similarity_router
 from powersearch.power_search_context import app as powersearch_api
 import os
 import uvicorn
@@ -25,6 +26,12 @@ _START_TIME = datetime.now(timezone.utc)
 async def lifespan(app: FastAPI):
     from database_gcp import Base, engine
     Base.metadata.create_all(bind=engine)
+
+    # Similarity Tickets: load the ticket file into ChromaDB on first start.
+    # Runs in a background thread so a slow embedding call never delays startup.
+    import threading
+    from similarity.ingest import ensure_seeded
+    threading.Thread(target=ensure_seeded, name="similarity-seed", daemon=True).start()
     yield
 
 
@@ -58,6 +65,7 @@ def create_app() -> FastAPI:
     app.include_router(monitoring_router)
     app.include_router(app_logging_api)
     app.include_router(powersearch_api)
+    app.include_router(similarity_router)
     return app
 
 

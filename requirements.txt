@@ -13,12 +13,18 @@ xmltodict
 # AI
 openai
 
+# Vector store (Similarity Tickets)
+chromadb
+
 # Config & validation
 python-dotenv
 pydantic
 
 # Database
 sqlalchemy
+
+# Vector DB (Similarity Tickets)
+chromadb
 
 # Auth & secrets (configuration API)
 bcrypt>=4.0
