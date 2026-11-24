@@ -1,13 +1,11 @@
-"""Synthetic SAP monitoring feeds (background jobs, failed IDocs).
+"""Static SAP monitoring feeds (background jobs, failed IDocs) and synthetic retrigger responses.
 
-Used when SAP CPI/APIM is not configured or when SAP_MONITORING_DATA_SOURCE=static.
-Dates are shifted on read so rows look current relative to the server clock.
+Dates in the JSON files are shifted on read so rows look current relative to server time.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -37,11 +35,6 @@ _IDOC_TIME_FIELDS = (
     ("creation_date", "creation_time"),
     ("last_updated_date", "last_updated_time"),
 )
-
-
-def monitoring_data_source() -> str:
-    """auto | static | live — default auto."""
-    return (os.environ.get("SAP_MONITORING_DATA_SOURCE") or "auto").strip().lower()
 
 
 def _parse_odata_ms(value: Any) -> Optional[int]:
@@ -125,32 +118,39 @@ def load_failed_idocs_static() -> List[dict]:
     return shifted
 
 
-def monitoring_live_configured(cfg: dict) -> bool:
-    """True when real SAP monitoring integrations are configured."""
-    if cfg.get("proxy_base"):
-        return True
-    cpi_ok = bool(
-        cfg.get("bg_jobs_cpi_url")
-        and cfg.get("bg_jobs_cpi_user")
-        and cfg.get("bg_jobs_cpi_password")
-    )
-    if cpi_ok and cfg.get("bg_jobs_odata_base"):
-        return True
-    if cpi_ok and cfg.get("failed_idocs_odata_base"):
-        return True
-    if cfg.get("failed_idocs_url") and cfg.get("sap_username") and cfg.get("sap_password"):
-        return True
-    return False
+_SYNTHETIC_BULK_BOUNDARY = "--batch_synthetic_001"
 
 
-def use_static_monitoring(cfg: dict, *, live_result_count: Optional[int] = None) -> bool:
-    mode = monitoring_data_source()
-    if mode == "static":
-        return True
-    if mode == "live":
-        return False
-    if not monitoring_live_configured(cfg):
-        return True
-    if live_result_count is not None and live_result_count == 0:
-        return True
-    return False
+def synthetic_retrigger_single_result(docnum: str) -> Dict[str, Any]:
+    doc = str(docnum).strip()
+    return {
+        "IvDocnum": doc,
+        "EvMessage": "IDoc retrigger submitted successfully.",
+        "EvStatus": "S",
+    }
+
+
+def synthetic_bulk_retrigger_multipart(docnums: List[str]) -> str:
+    """Multipart body shaped like SAP bulk $batch — parsed by RetriggerIdocModal."""
+    nums = [str(n).strip() for n in docnums if str(n).strip()]
+    if not nums:
+        return ""
+    chunks: List[str] = []
+    for num in nums:
+        payload = json.dumps(
+            {
+                "@odata.context": "$metadata#IdocReprocess",
+                "value": [synthetic_retrigger_single_result(num)],
+            }
+        )
+        chunks.append(
+            f"{_SYNTHETIC_BULK_BOUNDARY}\r\n"
+            "Content-Type: application/http\r\n"
+            "Content-Transfer-Encoding: binary\r\n"
+            "\r\n"
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n"
+            "\r\n"
+            f"{payload}\r\n"
+        )
+    return "".join(chunks) + f"{_SYNTHETIC_BULK_BOUNDARY}--\r\n"
