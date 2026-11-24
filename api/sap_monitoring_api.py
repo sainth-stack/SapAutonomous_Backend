@@ -16,6 +16,13 @@ import httpx as hp
 import xmltodict
 from fastapi import APIRouter, Body, HTTPException
 
+from api.monitoring_static_data import (
+    load_background_jobs_static,
+    load_failed_idocs_static,
+    monitoring_data_source,
+    use_static_monitoring,
+)
+
 logger = logging.getLogger(__name__)
 
 monitoring_router = APIRouter(tags=["SAP Monitoring"])
@@ -86,7 +93,8 @@ def _load_monitoring_settings() -> dict:
 def _log_monitoring_config() -> None:
     cfg = _load_monitoring_settings()
     logger.info(
-        "SAP monitoring: proxy=%s failed_idocs=%s bg_cpi=%s bg_odata=%s sap_user_set=%s",
+        "SAP monitoring: data_source=%s proxy=%s failed_idocs=%s bg_cpi=%s bg_odata=%s sap_user_set=%s",
+        monitoring_data_source(),
         cfg["proxy_base"] or "(none)",
         cfg["failed_idocs_fetch_mode"],
         "set" if cfg["bg_jobs_cpi_url"] else "missing",
@@ -250,6 +258,9 @@ def _sap_basic_auth(cfg: dict) -> Optional[hp.BasicAuth]:
 async def call_failed_idoc():
     """Fetch failed IDocs from SAP APIM (env) or optional SAP_MONITORING_PROXY_BASE."""
     cfg = _load_monitoring_settings()
+    if use_static_monitoring(cfg):
+        return {"result": load_failed_idocs_static()}
+
     idocs = []
     async with hp.AsyncClient(timeout=60.0) as client:
         try:
@@ -313,6 +324,8 @@ async def call_failed_idoc():
         except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
             logger.error("Error fetching failed idocs: %s", e)
 
+    if use_static_monitoring(cfg, live_result_count=len(idocs)):
+        return {"result": load_failed_idocs_static()}
     return {"result": idocs}
 
 
@@ -419,6 +432,9 @@ async def bulk_failed_idoc_retrigger(request: dict = Body(...)):
 async def call_bg_jobs():
     """Fetch SAP background jobs via CPI (env) or optional SAP_MONITORING_PROXY_BASE."""
     cfg = _load_monitoring_settings()
+    if use_static_monitoring(cfg):
+        return load_background_jobs_static()
+
     headers = {"Content-Type": "application/json"}
     job_data = []
     cet = ZoneInfo("Asia/Kolkata")
@@ -487,4 +503,6 @@ async def call_bg_jobs():
         except (hp.RequestError, hp.HTTPStatusError, ValueError, KeyError, TypeError) as e:
             logger.error("Error fetching background jobs: %s", e)
 
+    if use_static_monitoring(cfg, live_result_count=len(job_data)):
+        return load_background_jobs_static()
     return job_data
